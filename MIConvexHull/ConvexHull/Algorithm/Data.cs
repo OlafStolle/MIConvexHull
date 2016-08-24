@@ -71,7 +71,7 @@ namespace MIConvexHull
          */
         internal ConvexFaceInternal[] FacePool;
         internal bool[] AffectedFaceFlags;
-        
+
         /// <summary>
         /// Used to track the size of the current hull in the Update/RollbackCenter functions.
         /// </summary>
@@ -171,12 +171,11 @@ namespace MIConvexHull
         {
             UnprocessedFaces = new FaceList();
             ConvexFaces = new IndexBuffer();
-            
+
             FacePool = new ConvexFaceInternal[(Dimension + 1) * 10]; // must be initialized before object manager
             AffectedFaceFlags = new bool[(Dimension + 1) * 10];
             ObjectManager = new MIConvexHull.ObjectManager(this);
 
-            Center = new double[Dimension];
             TraverseStack = new IndexBuffer();
             UpdateBuffer = new int[Dimension];
             UpdateIndices = new int[Dimension];
@@ -188,7 +187,7 @@ namespace MIConvexHull
 
             ConnectorTable = new ConnectorList[ConnectorTableSize];
             for (int i = 0; i < ConnectorTableSize; i++) ConnectorTable[i] = new ConnectorList();
-            
+
             VertexMarks = new bool[Vertices.Length];
             InitializePositions(config);
 
@@ -268,6 +267,6 @@ namespace MIConvexHull
         double GetCoordinate(int v, int i)
         {
             return Positions[v * Dimension + i];
-        }        
+        }
     }
 }

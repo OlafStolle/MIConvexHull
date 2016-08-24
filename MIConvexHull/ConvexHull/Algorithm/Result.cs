@@ -26,6 +26,7 @@
 
 namespace MIConvexHull
 {
+    using System;
     using System.Collections.Generic;
 
     /*
@@ -50,13 +51,16 @@ namespace MIConvexHull
             var vertices = new IVertex[data.Count];
             for (int i = 0; i < data.Count; i++) vertices[i] = data[i];
             ConvexHullInternal ch = new ConvexHullInternal(vertices, false, config);
+            if (vertices.Length <= ch.Dimension)
+                throw new ArgumentException("There are not enough vertices (only "
+                    + vertices.Length + ") for the " + ch.Dimension + " dimensional space.");
             ch.FindConvexHull();
 
             var hull = ch.GetHullVertices(data);
 
             return new ConvexHull<TVertex, TFace> { Points = hull, Faces = ch.GetConvexFaces<TVertex, TFace>() };
         }
-        
+
         TVertex[] GetHullVertices<TVertex>(IList<TVertex> data)
         {
             int cellCount = ConvexFaces.Count;
@@ -64,7 +68,7 @@ namespace MIConvexHull
             int vertexCount = Vertices.Length;
 
             for (int i = 0; i < vertexCount; i++) VertexMarks[i] = false;
-            
+
             for (int i = 0; i < cellCount; i++)
             {
                 var vs = FacePool[ConvexFaces[i]].Vertices;

@@ -42,7 +42,6 @@ namespace MIConvexHull
      *       of the affected faces, and for each new face, compute "beyond vertices" 
      *       (CreateCone + CommitCone)
      * 
-     * + Implement it in way that is fast, but hard to understand and maintain.
      */
     internal partial class ConvexHullInternal
     {                
@@ -442,7 +441,7 @@ namespace MIConvexHull
         void FindConvexHull()
         {
             // Find the (dimension+1) initial points and create the simplexes.
-            InitConvexHull();
+            CreateInitialSimplex();
 
             // Expand the convex hull and faces.
             while (UnprocessedFaces.First != null)
