@@ -39,6 +39,7 @@ namespace MIConvexHull
      */
     internal partial class ConvexHullInternal
     {
+        #region Constructor
         /// <summary>
         /// Wraps the vertices and determines the dimension if it's unknown.
         /// </summary>
@@ -58,9 +59,239 @@ namespace MIConvexHull
 
             Dimension = DetermineDimension();
             if (Dimension < 2) throw new InvalidOperationException("Dimension of the input must be 2 or greater.");
-
             if (lift) Dimension++;
-            InitializeData(config);
+
+            UnprocessedFaces = new FaceList();
+            ConvexFaces = new IndexBuffer();
+
+            FacePool = new ConvexFaceInternal[(Dimension + 1) * 10]; // must be initialized before object manager
+            AffectedFaceFlags = new bool[(Dimension + 1) * 10];
+            ObjectManager = new MIConvexHull.ObjectManager(this);
+
+            TraverseStack = new IndexBuffer();
+            UpdateBuffer = new int[Dimension];
+            UpdateIndices = new int[Dimension];
+            EmptyBuffer = new IndexBuffer();
+            AffectedFaceBuffer = new IndexBuffer();
+            ConeFaceBuffer = new SimpleList<DeferredFace>();
+            SingularVertices = new HashSet<int>();
+            BeyondBuffer = new IndexBuffer();
+
+            ConnectorTable = new ConnectorList[ConnectorTableSize];
+            for (int i = 0; i < ConnectorTableSize; i++) ConnectorTable[i] = new ConnectorList();
+
+            VertexMarks = new bool[Vertices.Length];
+            InitializePositions(config);
+
+            MathHelper = new MathHelper(Dimension, Positions);
+        }
+
+        #endregion
+        #region Fields
+        /// <summary>
+        /// Corresponds to the dimension of the data.
+        /// 
+        /// When the "lifted" hull is computed, Dimension is automatically incremented by one.
+        /// </summary>
+        internal readonly int Dimension;
+
+        /// <summary>
+        /// Are we on a paraboloid?
+        /// </summary>
+        readonly bool IsLifted;
+
+        /// <summary>
+        /// Explained in ConvexHullComputationConfig.
+        /// </summary>
+        readonly double PlaneDistanceTolerance;
+
+        /*
+         * Representation of the input vertices.
+         * 
+         * - In the algorithm, a vertex is represented by its index in the Vertices array.
+         *   This makes the algorithm a lot faster (up to 30%) than using object reference everywhere.
+         * - Positions are stored as a single array of values. Coordinates for vertex with index i
+         *   are stored at indices <i * Dimension, (i + 1) * Dimension)
+         * - VertexMarks are used by the algorithm to help identify a set of vertices that is "above" (or "beyond") 
+         *   a specific face.
+         */
+        IVertex[] Vertices;
+        double[] Positions;
+        bool[] VertexMarks;
+
+        /*
+         * The triangulation faces are represented in a single pool for objects that are being reused.
+         * This allows for represent the faces as integers and significantly speeds up many computations.
+         * - AffectedFaceFlags are used to mark affected faces/
+         */
+        internal ConvexFaceInternal[] FacePool;
+        internal bool[] AffectedFaceFlags;
+
+        /// <summary>
+        /// Used to track the size of the current hull in the Update/RollbackCenter functions.
+        /// </summary>
+        int ConvexHullSize;
+
+        /// <summary>
+        /// A list of faces that that are not a part of the final convex hull and still need to be processed.
+        /// </summary>
+        FaceList UnprocessedFaces;
+
+        /// <summary>
+        /// A list of faces that form the convex hull.
+        /// </summary>
+        IndexBuffer ConvexFaces;
+
+        /// <summary>
+        /// The vertex that is currently being processed.
+        /// </summary>
+        int CurrentVertex;
+
+        /// <summary>
+        /// A helper variable to determine the furthest vertex for a particular convex face.
+        /// </summary>
+        double MaxDistance;
+
+        /// <summary>
+        /// A helper variable to help determine the index of the vertex that is furthest from the face that is currently being processed.
+        /// </summary>
+        int FurthestVertex;
+
+        /// <summary>
+        /// The centroid of the currently computed hull.
+        /// </summary>
+        double[] Center;
+
+        /*
+         * Helper arrays to store faces for adjacency update.
+         * This is just to prevent unnecessary allocations.
+         */
+        int[] UpdateBuffer;
+        int[] UpdateIndices;
+
+        /// <summary>
+        /// Used to determine which faces need to be updated at each step of the algorithm.
+        /// </summary>
+        IndexBuffer TraverseStack;
+
+        /// <summary>
+        /// Used for VerticesBeyond for faces that are on the convex hull.
+        /// </summary>
+        IndexBuffer EmptyBuffer;
+
+        /// <summary>
+        /// Used to determine which vertices are "above" (or "beyond") a face
+        /// </summary>
+        IndexBuffer BeyondBuffer;
+
+        /// <summary>
+        /// Stores faces that are visible from the current vertex.
+        /// </summary>
+        IndexBuffer AffectedFaceBuffer;
+
+        /// <summary>
+        /// Stores faces that form a "cone" created by adding new vertex.
+        /// </summary>
+        SimpleList<DeferredFace> ConeFaceBuffer;
+
+        /// <summary>
+        /// Stores a list of "singular" (or "generate", "planar", etc.) vertices that cannot be part of the hull.
+        /// </summary>
+        HashSet<int> SingularVertices;
+
+        /// <summary>
+        /// The connector table helps to determine the adjacency of convex faces.
+        /// Hashing is used instead of pairwise comparison. This significantly speeds up the computations,
+        /// especially for higher dimensions.
+        /// </summary>
+        ConnectorList[] ConnectorTable;
+        const int ConnectorTableSize = 2017;
+
+        /// <summary>
+        /// Manages the memory allocations and storage of unused objects.
+        /// Saves the garbage collector a lot of work.
+        /// </summary>
+        ObjectManager ObjectManager;
+
+        /// <summary>
+        /// Helper class for handling math related stuff.
+        /// </summary>
+        MathHelper MathHelper;
+        #endregion
+
+
+        /// <summary>
+        /// Get a vertex coordinate. Only used in the initialize functions,
+        /// in other places it part v * Dimension + i is inlined.
+        /// </summary>
+        /// <param name="v"></param>
+        /// <param name="i"></param>
+        /// <returns></returns>
+        double GetCoordinate(int v, int i)
+        {
+            return Positions[v * Dimension + i];
+        }
+        /// <summary>
+        /// Initialize the vertex positions based on the translation type from config.
+        /// </summary>
+        /// <param name="config"></param>
+        void InitializePositions(ConvexHullComputationConfig config)
+        {
+            Positions = new double[Vertices.Length * Dimension];
+            int index = 0;
+            if (IsLifted)
+            {
+                var origDim = Dimension - 1;
+                var tf = config.PointTranslationGenerator;
+                switch (config.PointTranslationType)
+                {
+                    case PointTranslationType.None:
+                        foreach (var v in Vertices)
+                        {
+                            double lifted = 0.0;
+                            for (int i = 0; i < origDim; i++)
+                            {
+                                var t = v.Position[i];
+                                Positions[index++] = t;
+                                lifted += t * t;
+                            }
+                            Positions[index++] = lifted;
+                        }
+                        break;
+                    case PointTranslationType.TranslateInternal:
+                        foreach (var v in Vertices)
+                        {
+                            double lifted = 0.0;
+                            for (int i = 0; i < origDim; i++)
+                            {
+                                var t = v.Position[i] + tf();
+                                Positions[index++] = t;
+                                lifted += t * t;
+                            }
+                            Positions[index++] = lifted;
+                        }
+                        break;
+                }
+            }
+            else
+            {
+                var tf = config.PointTranslationGenerator;
+                switch (config.PointTranslationType)
+                {
+                    case PointTranslationType.None:
+                        foreach (var v in Vertices)
+                        {
+                            for (int i = 0; i < Dimension; i++) Positions[index++] = v.Position[i];
+                        }
+                        break;
+                    case PointTranslationType.TranslateInternal:
+                        foreach (var v in Vertices)
+                        {
+                            for (int i = 0; i < Dimension; i++) Positions[index++] = v.Position[i] + tf();
+                        }
+                        break;
+                }
+            }
         }
 
         /// <summary>
@@ -101,14 +332,14 @@ namespace MIConvexHull
                 if (dimensionIndex == Dimension) dimensionIndex = 0;
                 var bestNewIndex = -1;
                 var lowestDotProduct = 1.0;
-                double[] bestUnitVector;
+                double[] bestUnitVector = { };
                 for (int i = 0; i < boundingBoxPoints[dimensionIndex].Count; i++)
                 {
                     var vIndex = boundingBoxPoints[dimensionIndex][i];
                     if (initVertices.Contains(vIndex)) boundingBoxPoints[dimensionIndex].RemoveAt(i);
                     else
                     {
-                        var newUnitVector = makeUnitVector(initVertices.Last(), bestNewIndex);
+                        var newUnitVector = makeUnitVector(initVertices.Last(), vIndex);
                         double maxDotProduct = calcMaxDotProduct(edgeUnitVectors, newUnitVector);
                         if (lowestDotProduct > maxDotProduct)
                         {
@@ -119,18 +350,31 @@ namespace MIConvexHull
                     }
                 }
                 if (lowestDotProduct >= 1.0) continue;
-                boundingBoxPoints[dimensionIndex].RemoveAt(bestNewIndex);
-                edgeUnitVectors.Add(makeUnitVector(initVertices.Last(), bestNewIndex));
+                boundingBoxPoints[dimensionIndex].Remove(bestNewIndex);
+                edgeUnitVectors.Add(bestUnitVector);
                 initVertices.Add(bestNewIndex);
             }
             calcInitialCenter(initVertices);
             foreach (var vertex in initVertices)
-                // Mark the vertex so that it's not included in any beyond set.
+                //    // Mark the vertex so that it's not included in any beyond set.
                 VertexMarks[vertex] = true;
 
-            // Create the initial simplexes.
-            var faces = CreateSimplexFaces(initVertices);
-
+            var faces = new int[Dimension + 1];
+            for (var i = 0; i <= Dimension; i++)
+            {
+                var vertices = new int[Dimension];
+                for (int j = 0, k = 0; j <= Dimension; j++)
+                    if (i != j) vertices[k++] = initVertices[j];
+                var newFace = FacePool[ObjectManager.GetFace()];
+                Array.Sort(vertices);
+                newFace.Vertices = vertices;
+                MathHelper.CalculateFacePlane(newFace, Center);
+                faces[i] = newFace.Index;
+            }
+            // update the adjacency (check all pairs of faces)
+            for (var i = 0; i < Dimension; i++)
+                for (var j = i + 1; j < Dimension + 1; j++) UpdateAdjacency(FacePool[faces[i]], FacePool[faces[j]]);
+            
             // Init the vertex beyond buffers.
             for (int i = 0; i < faces.Length; i++)
             {
@@ -147,10 +391,11 @@ namespace MIConvexHull
         {
             Center = new double[Dimension];
             for (int dimIndex = 0; dimIndex < Dimension; dimIndex++)
+            {
                 for (int vertexIndex = 0; vertexIndex <= Dimension; vertexIndex++)
                     Center[dimIndex] += GetCoordinate(initVertices[vertexIndex], dimIndex);
-            for (int dimIndex = 0; dimIndex < Dimension; dimIndex++)
                 Center[dimIndex] /= Dimension + 1;
+            }
         }
 
         private double calcMaxDotProduct(List<double[]> edgeUnitVectors, double[] newUnitVector)
@@ -161,6 +406,7 @@ namespace MIConvexHull
                 var dot = 0.0;
                 for (int dimIndex = 0; dimIndex < Dimension; dimIndex++)
                     dot += edgeUnitVectors[i][dimIndex] * newUnitVector[dimIndex];
+                dot = Math.Abs(dot);
                 if (maxDotProduct < dot) maxDotProduct = dot;
             }
             return maxDotProduct;
@@ -179,39 +425,7 @@ namespace MIConvexHull
                 vector[i] /= magnitude;
             return vector;
         }
-
-        /// <summary>
-        /// Create the first faces from (dimension + 1) vertices.
-        /// </summary>
-        /// <returns></returns>
-        int[] CreateSimplexFaces(IList<int> initialPoints)
-        {
-            var faces = new int[Dimension + 1];
-
-            for (var i = 0; i < Dimension + 1; i++)
-            {
-                var vertices = new int[Dimension];
-                for (int j = 0, k = 0; j <= Dimension; j++)
-                {
-                    if (i != j) vertices[k++] = initialPoints[j];
-                }
-                var newFace = FacePool[ObjectManager.GetFace()];
-                newFace.Vertices = vertices;
-                Array.Sort(vertices);
-                MathHelper.CalculateFacePlane(newFace, Center);
-                faces[i] = newFace.Index;
-            }
-
-            // update the adjacency (check all pairs of faces)
-            for (var i = 0; i < Dimension; i++)
-            {
-                for (var j = i + 1; j < Dimension + 1; j++) UpdateAdjacency(FacePool[faces[i]], FacePool[faces[j]]);
-            }
-
-            return faces;
-        }
-
-
+        
         /// <summary>
         /// Check if 2 faces are adjacent and if so, update their AdjacentFaces array.
         /// </summary>
@@ -272,20 +486,7 @@ namespace MIConvexHull
 
             face.FurthestVertex = FurthestVertex;
         }
-
-
-        private int LexCompare(int u, int v)
-        {
-            int uOffset = u * Dimension, vOffset = v * Dimension;
-            for (int i = 0; i < Dimension; i++)
-            {
-                double x = Positions[uOffset + i], y = Positions[vOffset + i];
-                int comp = x.CompareTo(y);
-                if (comp != 0) return comp;
-            }
-            return 0;
-        }
-
+        
         private List<List<int>> FindBoundingBoxPoints(IVertex[] vertices)
         {
             var extremes = new List<List<int>>();
@@ -306,13 +507,13 @@ namespace MIConvexHull
                         minIndices.Clear();
                         minIndices.Add(j);
                     }
-                    if (diff > 0)
+                    else if (diff > 0)
                     { // you found a solution slightly better than before, clear out tosee that are no longer on the list and store new value
                         min = v;
                         minIndices.RemoveAll(index => min - GetCoordinate(index, i) > PlaneDistanceTolerance);
                         minIndices.Add(j);
                     }
-                    if (diff > -PlaneDistanceTolerance)
+                    else if (diff > -PlaneDistanceTolerance)
                     { //same or almost as good as current limit, so store it
                         minIndices.Add(j);
                     }
@@ -323,13 +524,13 @@ namespace MIConvexHull
                         maxIndices.Clear();
                         maxIndices.Add(j);
                     }
-                    if (diff > 0)
+                    else if (diff > 0)
                     { // you found a solution slightly better than before, clear out tosee that are no longer on the list and store new value
                         max = v;
                         maxIndices.RemoveAll(index => min - GetCoordinate(index, i) > PlaneDistanceTolerance);
                         maxIndices.Add(j);
                     }
-                    if (diff > -PlaneDistanceTolerance)
+                    else if (diff > -PlaneDistanceTolerance)
                     { //same or almost as good as current limit, so store it
                         maxIndices.Add(j);
                     }
